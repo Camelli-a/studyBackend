@@ -43,6 +43,7 @@ app.use(express.json());
 app.use(limiter);
 
 app.use("/admin",require("./router/adminRouter"));
+app.use("/material",require("./router/materialRouter"))
 
 app.listen(PORT,'0.0.0.0', () => {
   console.log(`Server is running on port ${PORT}`);
