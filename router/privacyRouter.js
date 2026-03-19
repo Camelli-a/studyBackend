@@ -1,13 +1,10 @@
 const express = require('express');
 const router = express.Router();
-
-// 🌟 适配：注释不存在的依赖，模拟核心方法
-// const { detectPrivacy, recognizePii } = require('../services/privacyService');
-// const responseUtil = require('../utils/responseUtil');
-// const resourceAuth = require('../middlewares/resourceAuth');
+// 引入数据库工具（核心）
+const { db } = require("../db/dbUtils");
 
 /**
- * 模拟响应工具类（替代responseUtil）
+ * 统一响应工具类
  */
 const responseUtil = {
     success: (data, msg = "操作成功") => ({
@@ -26,100 +23,142 @@ const responseUtil = {
 };
 
 /**
- * 模拟资源认证中间件（替代resourceAuth）
+ * 资源认证中间件
  */
 const resourceAuth = (req, res, next) => {
-    // 测试阶段跳过认证，直接放行
     next();
 };
 
 /**
- * PII敏感信息识别接口
+ * PII敏感信息识别接口（写入数据库）
  * POST /api/privacy/recognize
  */
 router.post('/recognize', resourceAuth, async (req, res, next) => {
   try {
-    const { content } = req.body;
-    if (!content) {
-      return res.json(responseUtil.error('缺少参数：content', 400));
+    const { userId, content, resourceId } = req.body;
+    
+    // 参数校验（新增userId必填）
+    if (!userId || !content) {
+      return res.json(responseUtil.error('缺少参数：userId/content', 400));
     }
 
-    // 🌟 适配：模拟PII识别结果（替代真实服务层逻辑）
-    // const result = await recognizePii(content);
+    // 1. PII识别逻辑（保留原有正则）
     const phoneRegex = /1[3-9]\d{9}/g;
     const emailRegex = /\w+@\w+\.\w+/g;
     const phones = content.match(phoneRegex) || [];
     const emails = content.match(emailRegex) || [];
+    const hasPii = phones.length > 0 || emails.length > 0;
+    const piiList = JSON.stringify([
+      { type: 'phone', values: phones },
+      { type: 'email', values: emails }
+    ]);
+
+    // 2. 写入PII记录表
+    const insertSql = `
+      INSERT INTO pii_record (
+        resource_id, user_id, content, has_pii, pii_list
+      ) VALUES (?, ?, ?, ?, ?)
+    `;
+    await db.execute(insertSql, [
+      resourceId || '', // 可选：关联资源ID
+      userId,
+      content,
+      hasPii ? 1 : 0,
+      piiList
+    ]);
+
+    // 3. 返回结果（保持原有格式）
     const result = {
-      hasPii: phones.length > 0 || emails.length > 0,
+      hasPii,
       piiList: [
         { type: 'phone', values: phones },
         { type: 'email', values: emails }
       ],
       piiCount: phones.length + emails.length
     };
-
     return res.json(responseUtil.success(result));
+
   } catch (err) {
+    console.error("PII识别失败：", err);
     next(err);
   }
 });
 
 /**
- * 隐私分级判定接口
+ * 隐私分级判定接口（更新资源表隐私等级）
  * POST /api/privacy/classify
  */
 router.post('/classify', resourceAuth, async (req, res, next) => {
   try {
-    const { content, fileType, userPrivacyMark } = req.body;
-    if (!content || !fileType) {
+    const { userId, content, fileType, userPrivacyMark, resourceId } = req.body;
+    
+    // 参数校验
+    if (!userId || !content || !fileType) {
       return res.json(responseUtil.error('缺少参数：content/fileType', 400));
     }
 
-    // 🌟 适配：模拟隐私分级结果（替代真实服务层逻辑）
-    // const result = await detectPrivacy(content, fileType, userPrivacyMark);
+    // 1. 隐私分级逻辑
     const hasPii = /1[3-9]\d{9}/g.test(content) || /\w+@\w+\.\w+/g.test(content);
     const privacyLevel = userPrivacyMark ?? (hasPii ? 2 : 0);
+
+    // 2. 如果传了resourceId，更新资源表的隐私等级
+    if (resourceId) {
+      const updateSql = `
+        UPDATE resource 
+        SET privacy_level = ?, update_time = CURRENT_TIMESTAMP 
+        WHERE resource_id = ? AND user_id = ? AND is_delete = 0
+      `;
+      await db.execute(updateSql, [privacyLevel, resourceId, userId]);
+    }
+
+    // 3. 返回结果
     const result = {
       hasPii,
       piiList: hasPii ? [{ type: 'phone/email', values: ['敏感信息'] }] : [],
       privacyLevel
     };
-
     return res.json(responseUtil.success(result));
+
   } catch (err) {
+    console.error("隐私分级失败：", err);
     next(err);
   }
 });
 
 /**
- * 获取资源隐私等级接口
+ * 获取资源隐私等级接口（从数据库读取）
  * GET /api/privacy/level
  */
 router.get('/level', resourceAuth, async (req, res, next) => {
   try {
     const { userId, resourceId } = req.query;
+    
+    // 参数校验
     if (!userId || !resourceId) {
       return res.json(responseUtil.error('缺少参数：userId/resourceId', 400));
     }
 
-    // 🌟 适配：模拟资源查询结果（替代真实服务层逻辑）
-    // const { getResource } = require('../services/syncService');
-    // const resource = await getResource(userId, resourceId);
-    const resource = {
-      resourceId,
-      privacyLevel: 0 // 模拟通用等级
-    };
+    // 1. 从资源表查询隐私等级
+    const querySql = `
+      SELECT privacy_level FROM resource 
+      WHERE resource_id = ? AND user_id = ? AND is_delete = 0
+    `;
+    const resource = await db.getOne(querySql, [resourceId, userId]);
 
+    // 2. 资源不存在
     if (!resource) {
       return res.json(responseUtil.error('资源不存在', 404));
     }
+
+    // 3. 返回结果
     return res.json(responseUtil.success({
       resourceId,
-      privacyLevel: resource.privacyLevel,
-      privacyDesc: getPrivacyDesc(resource.privacyLevel)
+      privacyLevel: resource.privacy_level,
+      privacyDesc: getPrivacyDesc(resource.privacy_level)
     }));
+
   } catch (err) {
+    console.error("获取隐私等级失败：", err);
     next(err);
   }
 });

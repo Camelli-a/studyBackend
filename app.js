@@ -4,23 +4,16 @@ const app = express();
 // 🌟 优化：从环境变量读取端口，本地开发用3000，部署可灵活配置
 const PORT = process.env.PORT || 3000;
 
-// // 🌟 修复：增加try-catch，避免dbUtils不存在导致服务启动失败
-// let db, genid;
-// try {
-//   ({ db, genid } = require("./db/dbUtils"));
-//   console.log("✅ 数据库工具加载成功");
-// } catch (err) {
-//   console.warn("⚠️ 数据库工具加载失败（非核心错误，服务继续运行）：", err.message);
-//   db = null;
-//   genid = () => Math.random().toString(36).substr(2, 10); // 兜底生成ID
-// }
-let db = null;
-let genid = () => Math.random().toString(36).substr(2, 10);
-console.log("✅ 数据库工具暂未加载（测试阶段）");
-
-// const redis = require("redis")
-// const redisClient = require("./db/redis")//redis使用
-// require("./queue/worker.js")//bull队列，redis可以使用
+// 🌟 修复：增加try-catch，避免dbUtils不存在导致服务启动失败
+let db, genid;
+try {
+  ({ db, genid } = require("./db/dbUtils"));
+  console.log("✅ 数据库工具加载成功");
+} catch (err) {
+  console.warn("⚠️ 数据库工具加载失败（非核心错误，服务继续运行）：", err.message);
+  db = null;
+  genid = () => Math.random().toString(36).substr(2, 10); // 兜底生成ID
+}
 
 const path = require('path');
 const cors = require('cors'); 
@@ -117,17 +110,30 @@ app.use(express.urlencoded({
 /* 挂载限流中间件 */
 app.use(limiter);
 
-/* 🌟 关键修复：路由挂载增加容错处理（避免路由文件不存在导致启动失败） */
-// 1. 原有admin路由
+/* 🌟 核心修改：修复管理员路由挂载路径，匹配 /api/v1/simple_admin */
+// 1. 管理员路由（正确挂载路径：/api/v1/simple_admin）
+try {
+  app.use("/api/v1/simple_admin", require("./router/adminRouter"));
+  console.log("✅ 已挂载/api/v1/simple_admin路由");
+} catch (err) {
+  console.error("❌ /api/v1/simple_admin路由加载失败：", err.message);
+  // 兜底：返回404
+  app.use("/api/v1/simple_admin", (req, res) => {
+    res.status(404).json({ 
+      code: 404, 
+      msg: "管理员路由加载失败或接口不存在", 
+      success: false,
+      timestamp: Date.now()
+    });
+  });
+}
+
+// 保留原有/admin路由（兼容旧路径，可选）
 try {
   app.use("/admin", require("./router/adminRouter"));
-  console.log("✅ 已挂载/admin路由");
+  console.log("✅ 已挂载/admin路由（兼容旧路径）");
 } catch (err) {
-  console.warn("⚠️ /admin路由加载失败（若未开发可忽略）：", err.message);
-  // 兜底：返回404
-  app.use("/admin", (req, res) => {
-    res.status(404).json({ code: 404, msg: "admin路由暂未实现", success: false });
-  });
+  console.warn("⚠️ /admin路由加载失败（兼容路径，可忽略）：", err.message);
 }
 
 // 2. 资源核心路由

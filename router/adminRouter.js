@@ -1,117 +1,127 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
-
-// 🌟 适配：注释数据库依赖（测试阶段无需数据库，避免报错）
-// const { db } = require("../db/dbUtils");
+const { db, genid } = require("../db/dbUtils"); // 引入数据库工具
 
 /**
- * 简单注册账号（适配版：移除数据库依赖，模拟逻辑）
+ * 管理员注册（真实数据库版）
+ * POST /api/v1/simple_admin/register
  */
 router.post('/register', async (req, res) => {
-    let { account, password } = req.body;
+  const { account, password, nickname } = req.body;
 
-    // 1. 参数合法性校验
-    if (!account || !password) {
-        return res.status(400).json({
-            code: 400,
-            msg: "账号或密码不能为空",
-            success: false
-        });
+  // 1. 参数校验
+  if (!account || !password) {
+    return res.status(400).json({
+      code: 400,
+      msg: "账号或密码不能为空",
+      success: false
+    });
+  }
+
+  try {
+    // 2. 检查账号是否已存在
+    const checkSql = "SELECT id FROM admin WHERE account = ? AND is_delete = 0";
+    const existUser = await db.getOne(checkSql, [account]);
+    if (existUser) {
+      return res.status(409).json({
+        code: 409,
+        msg: "该账号已被注册",
+        success: false
+      });
     }
 
-    try {
-        // 🌟 适配：模拟账号查重（跳过数据库查询）
-        // const checkSql = "SELECT account FROM admin WHERE account = ?";
-        // const { rows: existRows } = await db.async.all(checkSql, [account]);
-        // if (existRows.length > 0) { ... }
-        
-        // 模拟：账号为 test123 则提示已注册
-        if (account === 'test123') {
-            return res.status(409).json({
-                code: 409,
-                msg: "该账号已被注册",
-                success: false
-            });
-        }
+    // 3. SHA256加密密码
+    const hash = crypto.createHash('sha256');
+    hash.update(password);
+    const hashPwd = hash.digest('hex');
 
-        // 2. 对密码进行 SHA256 加密（保留核心逻辑）
-        const hash = crypto.createHash('sha256');
-        hash.update(password);
-        const hashpwd = hash.digest('hex');
+    // 4. 插入新账号
+    const insertSql = `
+      INSERT INTO admin (account, password, nickname) 
+      VALUES (?, ?, ?)
+    `;
+    const insertParams = [account, hashPwd, nickname || '默认管理员'];
+    const insertResult = await db.execute(insertSql, insertParams);
 
-        // 🌟 适配：跳过数据库插入，模拟注册成功
-        // const insertSql = "INSERT INTO admin (account, password) VALUES (?, ?)";
-        // await db.async.run(insertSql, [account, hashpwd]);
+    res.status(200).json({
+      code: 200,
+      msg: "注册成功",
+      success: true,
+      data: {
+        adminId: insertResult.insertId,
+        account
+      }
+    });
 
-        res.status(200).json({
-            code: 200,
-            msg: "注册成功",
-            success: true,
-            data: { account, hashpwd: '加密后的密码（测试展示）' }
-        });
-
-    } catch (err) {
-        console.error("Register Error:", err);
-        res.status(500).json({
-            code: 500,
-            msg: "服务器内部错误",
-            success: false
-        });
-    }
+  } catch (err) {
+    console.error("注册失败：", err);
+    res.status(500).json({
+      code: 500,
+      msg: "服务器内部错误",
+      success: false
+    });
+  }
 });
 
 /**
- * 简单登录账号（适配版：移除数据库依赖，模拟逻辑）
+ * 管理员登录（真实数据库版）
+ * POST /api/v1/simple_admin/login
  */
 router.post('/login', async (req, res) => {
-    let { account, password } = req.body;
+  const { account, password } = req.body;
 
-    // 1. 参数合法性校验
-    if (!account || !password) {
-        return res.status(400).json({
-            code: 400,
-            msg: "账号或密码不能为空",
-            success: false
-        });
-    }
+  // 1. 参数校验
+  if (!account || !password) {
+    return res.status(400).json({
+      code: 400,
+      msg: "账号或密码不能为空",
+      success: false
+    });
+  }
 
-    // 2. 对输入的密码进行 SHA256 加密
-    const hash = crypto.createHash('sha256');
-    hash.update(password);
-    const hashpwd = hash.digest('hex');
+  // 2. 加密密码
+  const hash = crypto.createHash('sha256');
+  hash.update(password);
+  const hashPwd = hash.digest('hex');
 
-    try {
-        // 🌟 适配：模拟数据库查询（跳过真实查询）
-        // const loginSql = "SELECT account FROM admin WHERE account = ? AND password = ?";
-        // const { rows: loginRows } = await db.async.all(loginSql, [account, hashpwd]);
-        
-        // 模拟：账号 test123 + 密码 123456 登录成功
-        const mockSuccess = account === 'test123' && hashpwd === '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92';
-        
-        if (mockSuccess) {
-            res.status(200).json({
-                code: 200,
-                msg: "登录成功",
-                success: true,
-                data: { account }
-            });
-        } else {
-            res.status(401).json({
-                code: 401,
-                msg: "账号或密码错误",
-                success: false
-            });
+  try {
+    // 3. 查询账号密码是否匹配
+    const loginSql = `
+      SELECT id, account, nickname FROM admin 
+      WHERE account = ? AND password = ? AND is_delete = 0
+    `;
+    const user = await db.getOne(loginSql, [account, hashPwd]);
+
+    if (user) {
+      // 登录成功
+      res.status(200).json({
+        code: 200,
+        msg: "登录成功",
+        success: true,
+        data: {
+          adminId: user.id,
+          account: user.account,
+          nickname: user.nickname
         }
-
-    } catch (err) {
-        console.error("Login Error:", err);
-        res.status(500).json({
-            code: 500,
-            msg: "服务器内部错误",
-            success: false
-        });
+      });
+    } else {
+      // 账号/密码错误
+      res.status(401).json({
+        code: 401,
+        msg: "账号或密码错误",
+        success: false
+      });
     }
+
+  } catch (err) {
+    console.error("登录失败：", err);
+    res.status(500).json({
+      code: 500,
+      msg: "服务器内部错误",
+      success: false
+    });
+  }
 });
 
 module.exports = router;
